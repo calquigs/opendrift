@@ -226,9 +226,8 @@ class CoralLarvae(OceanDrift):
 
     def interact_with_habitat(self):
             '''
-            The particle settles only if older than competency_age_seconds and within user-defined habitat polygon
+            The particle settles only if older than competency_age_seconds and within user-defined distance from bottom within habitat polygon
  
-            To be defined : do we need the particle to be touching seabed AND within habitat or within habitat only?
             '''
             
             if self.num_elements_active() == 0:
