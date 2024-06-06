@@ -187,7 +187,7 @@ class CoralLarvae(OceanDrift):
 
         if self.get_config('biology:settlement_in_habitat') is False : 
             # if no specific user-defined habitat, deactivate particles below seabed and older than competency_age_seconds
-            self.interact_with_seafloor_bivalve()
+            self.interact_with_seafloor()
         else :
             # if specific user-defined habitat, checks if particles are within habitat polygons             
             self.interact_with_habitat()
@@ -195,9 +195,9 @@ class CoralLarvae(OceanDrift):
         # original code
         # https://github.com/OpenDrift/opendrift/blob/4dbd9a607fe23e64dcbf9fd05905af8713dc74d1/opendrift/models/basemodel.py#L613 
     
-    def interact_with_seafloor_bivalve(self):
+    def interact_with_seafloor(self):
             '''
-            Upon touching the seafloor, the bivalve particle settles only if older than competency_age_seconds
+            Upon touching the seafloor, the particle settles only if older than competency_age_seconds
             '''
 
             if self.num_elements_active() == 0:
@@ -226,7 +226,7 @@ class CoralLarvae(OceanDrift):
 
     def interact_with_habitat(self):
             '''
-            The bivalve particle settles only if older than competency_age_seconds and within user-defined habitat polygon
+            The particle settles only if older than competency_age_seconds and within user-defined habitat polygon
  
             To be defined : do we need the particle to be touching seabed AND within habitat or within habitat only?
             '''
