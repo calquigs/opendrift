@@ -363,7 +363,7 @@ class CoralLarvae(OceanDrift):
 
         self.elements.z[floating] = np.minimum(0, self.elements.z[floating] + self.get_config('biology:precompetency_buoyancy')*self.time_step.total_seconds())
         self.elements.z[sinking] = np.minimum(0, self.elements.z[sinking] + self.get_config('biology:postcompetency_vetical_terminal_velocty')*self.time_step.total_seconds())
-        self.elements.z[self.elements.z<-50] = -50
+        self.elements.z[self.elements.z<-30] = -30
         logger.debug('%s larvae floating' % len(floating))
         logger.debug('%s larvae sinking' % len(sinking))
 
