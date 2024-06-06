@@ -1,7 +1,7 @@
 
 import numpy as np
 from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
-from shapely.geometry import Polygon, Point, MultiPolygon#asPolygon # added for settlement in polygon only
+from shapely.geometry import Polygon, Point, MultiPolygon
 import shapely
 import shapely.vectorized
 import random
@@ -10,16 +10,13 @@ import logging; logger = logging.getLogger(__name__)
 from opendrift.config import CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 
 class CoralLarvae(OceanDrift):
-    """Buoyant particle trajectory model based on the OpenDrift framework.
+    """
+        Particle trajectory model based on the OpenDrift framework.
 
-        Developed at MET Norway
+        Module to simulate coral larval dispersal. Larvae are given a precomptency buoyancy,  
+        a competency age, and a settlement vertical swimming velocity. Settlement is defined 
+        by minimum distance from the bottom within suitable habitat provided by a shapefile.
 
-        Generic module for particles that are subject to vertical turbulent
-        mixing with the possibility for positive or negative buoyancy
-
-        Particles could be e.g. oil droplets, plankton, or sediments
-
-        Under construction.
     """
 
     ElementType = Lagrangian3DArray
