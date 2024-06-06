@@ -356,6 +356,7 @@ class CoralLarvae(OceanDrift):
                                          reason='settled_on_coast')
 
     def larvae_buoyancy(self):
+        """Applies buoyancy or settlement swimming behavior based on competency age"""
 
         floating = np.where(self.elements.age_seconds<self.get_config('biology:competency_age_seconds'))[0]
         sinking = np.where(self.elements.age_seconds>=self.get_config('biology:competency_age_seconds'))[0]
