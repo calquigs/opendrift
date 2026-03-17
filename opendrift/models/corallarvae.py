@@ -3,23 +3,95 @@ import numpy as np
 from opendrift.models.oceandrift import OceanDrift, Lagrangian3DArray
 from shapely.geometry import Polygon, Point, MultiPolygon
 import shapely
+import shapefile
 import shapely.vectorized
 import random
+import utm
+import math
 from sklearn.neighbors import BallTree
 import logging; logger = logging.getLogger(__name__)
 from opendrift.config import CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
 
+class CoralLarvaeObj(Lagrangian3DArray):
+    """Extending Lagrangian3DArray with specific properties for pelagic eggs/larvae
+    """
+
+    variables = Lagrangian3DArray.add_variables([
+        ('settlement_opportunity', {'dtype': np.int64,
+                       'units': 'habitat polygon index',
+                       'default': -1})])
+
+class Grid:
+    def __init__(self, bins, records, cell_size):
+        """
+        shapefile attribute format: ID, x, y, region_str, region_id
+        """
+        self.bins = bins
+#        self.regions = list(set([record[3] for record in records]))
+#        self.islands = list(set([record[7] for record in records]))
+        min_lon = min([min([p[0] for p in b.points[:]]) for b in bins])
+        max_lon = max([max([p[0] for p in b.points[:]]) for b in bins])
+        min_lat = min([min([p[1] for p in b.points[:]]) for b in bins])
+        max_lat = max([max([p[1] for p in b.points[:]]) for b in bins])
+        print(f'lon range: ({min_lon}, {max_lon})')
+        print(f'lat range: ({min_lat}, {max_lat})')
+        self.lon_cell_size = cell_size
+        self.lat_cell_size = cell_size
+        self.nlon = round((max_lon - min_lon) / self.lon_cell_size)
+        self.nlat = round((max_lat - min_lat) / self.lat_cell_size)
+        print(f'grid size: ({self.nlon}, {self.nlat})')
+        # save the origin of the grid
+        self.min_lon, self.min_lat, self.max_lon, self.max_lat = min_lon, min_lat, max_lon, max_lat
+        self.bin_idx = np.full((self.nlon, self.nlat), -1, dtype='int')
+#        self.bin_regions = np.full((self.nlon, self.nlat), -1, dtype='int')
+#        self.bin_islands = np.full((self.nlon, self.nlat), -1, dtype='int')
+        print(self.bin_idx.shape)
+        # mark all the grid cells that have settlement bins and assign bin regions
+        for i in range(len(self.bins)):
+            b = self.bins[i]
+            lon_idx = self.lon_to_grid_col(min([p[0] for p in b.points[:]]))
+            lat_idx = self.lat_to_grid_row(min([p[1] for p in b.points[:]]))
+            self.bin_idx[lon_idx, lat_idx] = records[i][7]
+#            self.bin_regions[lon_idx, lat_idx] = records[i][4]
+#            self.bin_islands[lon_idx, lat_idx] = records[i][8]
+    def lon_to_grid_col(self, lon):
+        if lon < 0:
+            lon += 360
+        if lon < self.min_lon:
+            lon = self.min_lon
+        if lon > self.max_lon:
+            lon = self.max_lon - 1
+        return math.floor((lon - self.min_lon) / self.lon_cell_size)
+    def lat_to_grid_row(self, lat):
+        if lat < self.min_lat:
+            lat = self.min_lat
+        if lat > self.max_lat:
+            lat = self.max_lat - 1
+        return math.floor((lat - self.min_lat) / self.lat_cell_size)
+    def get_bin_idx(self, lon, lat):
+        lon_idx = self.lon_to_grid_col(lon)
+        lat_idx = self.lat_to_grid_row(lat)
+        return self.bin_idx[lon_idx, lat_idx]
+#    def get_bin_region(self, lon, lat):
+#        lon_idx = self.lon_to_grid_col(lon)
+#        lat_idx = self.lat_to_grid_row(lat)
+#        return self.bin_regions[lon_idx, lat_idx]
+#    def get_bin_island(self, lon, lat):
+#        lon_idx = self.lon_to_grid_col(lon)
+#        lat_idx = self.lat_to_grid_row(lat)
+#        return self.bin_islands[lon_idx, lat_idx]
+
+
 class CoralLarvae(OceanDrift):
     """
-        Particle trajectory model based on the OpenDrift framework.
+    Particle trajectory model for coral larvae based on the OpenDrift framework.
 
-        Module to simulate coral larval dispersal. Larvae are given a precomptency buoyancy,  
-        a competency age, and a settlement vertical swimming velocity. Settlement is defined 
-        by minimum distance from the bottom within suitable habitat provided by a shapefile.
+    Module for simulating dispersal of particles that undergo changes in their buoyancy 
+    over the course of larval development. Particles check their location at each timestep and write 
 
     """
 
-    ElementType = Lagrangian3DArray
+    ElementType = CoralLarvaeObj
 
     required_variables = {
         'x_sea_water_velocity': {'fallback': 0},
@@ -88,15 +160,25 @@ class CoralLarvae(OceanDrift):
         self._add_config({ 'biology:settlement_in_habitat': {'type': 'bool', 'default': False,
                            'description': 'settlement restricted to suitable user-defined habitat only.',
                            'level': CONFIG_LEVEL_BASIC}})
-        self._add_config({ 'biology:distance_from_bottom_to_settle': {'type': 'float', 'default': None, 'min': 0.0, 'max': 1.0e10, 'units': 'seconds',
+        self._add_config({ 'biology:distance_from_bottom_to_settle': {'type': 'float', 'default': None, 'min': 0.0, 'max': 1.0e10, 'units': 'm',
                            'description': 'Minimum distance from the seafloor at which a particle can settle. If None, any particles within the horizontal extent of habitat will settle, if 0, particle must be touching the bottom to settle.',
                            'level': CONFIG_LEVEL_BASIC}})
-        self._add_config({ 'biology:precompetency_buoyancy': {'type': 'float', 'default': 0, 'min': -1.0e10, 'max': 1.0e10, 'units': 'seconds',
+        self._add_config({ 'biology:precompetency_buoyancy': {'type': 'float', 'default': 0, 'min': -1.0e10, 'max': 1.0e10, 'units': 'm/s',
                            'description': 'buoyancy of precompetency_larvae. (e.g. 0.0014, https://doi.org/10.1016/bs.amb.2020.07.001)',
                            'level': CONFIG_LEVEL_BASIC}})
-        self._add_config({ 'biology:postcompetency_vetical_terminal_velocty': {'type': 'float', 'default': 0, 'min': -1.0e10, 'max': 1.0e10, 'units': 'seconds',
+        self._add_config({ 'biology:postcompetency_vetical_terminal_velocty': {'type': 'float', 'default': 0, 'min': -1.0e10, 'max': 1.0e10, 'units': 'm/s',
                            'description': 'larval settling speed. (e.g. -0.001, https://doi.org/10.1016/bs.amb.2020.07.001)',
                            'level': CONFIG_LEVEL_BASIC}})
+        self._add_config({ 'biology:swim_down_only_in_habitat': {'type': 'bool', 'default': False,
+                           'description': 'swim down only when above habitat',
+                           'level': CONFIG_LEVEL_BASIC}})
+        self._add_config({ 'biology:settlement_success_rate': {'type': 'float', 'default': 1, 'min': 0, 'max': 1, 'units': 'percent',
+                           'description': 'percent chance of settlement when possible',
+                           'level': CONFIG_LEVEL_BASIC}})
+        self._add_config({ 'biology:settlement_opportunity_tracking': {'type': 'bool', 'default': False,
+                           'description': 'Whether to track possible settlement opportunities when particles pass through potential habitat rather than retiring particles from the simulation',
+                           'level': CONFIG_LEVEL_BASIC}})
+
 
     def sea_surface_height(self):
         '''fetches sea surface height for presently active elements
@@ -137,13 +219,20 @@ class CoralLarvae(OceanDrift):
     #####################################################################################################################
     # Definition of habitat
     #####################################################################################################################
-      
+    
+    def add_habitat_grid(self, shapefile_location,cell_size):
+        shp = shapefile.Reader(shapefile_location)
+        bins = shp.shapes()
+        records = shp.records()
+        self.habitat_grid = Grid(bins, records,cell_size)
+        
     def add_settlement_habitat(self, shapefile_location):
         """Suitable habitat polygons in a shapefile.shp , or nan-delimited polygons in textfile.txt """
         # 
         # remove dependency to Fiona, and use cartopy instead
         # allow for input of nan-delimited polys from text file as well
         polyList = []
+        recordList = []
         self.centers_habitat = []
         rad_centers = []
         if '.shp' in shapefile_location :
@@ -187,7 +276,7 @@ class CoralLarvae(OceanDrift):
 
         if self.get_config('biology:settlement_in_habitat') is False : 
             # if no specific user-defined habitat, deactivate particles below seabed and older than competency_age_seconds
-            self.interact_with_seafloor()
+            self.interact_with_seafloor_coral()
         else :
             # if specific user-defined habitat, checks if particles are within habitat polygons             
             self.interact_with_habitat()
@@ -195,9 +284,9 @@ class CoralLarvae(OceanDrift):
         # original code
         # https://github.com/OpenDrift/opendrift/blob/4dbd9a607fe23e64dcbf9fd05905af8713dc74d1/opendrift/models/basemodel.py#L613 
     
-    def interact_with_seafloor(self):
+    def interact_with_seafloor_coral(self):
             '''
-            Upon touching the seafloor, the particle settles only if older than competency_age_seconds
+            Upon touching the seafloor, the coral particle settles only if older than competency_age_seconds
             '''
 
             if self.num_elements_active() == 0:
@@ -224,14 +313,19 @@ class CoralLarvae(OceanDrift):
                 logger.debug('%s elements hit seafloor, %s were older than %s sec. and were deactivated, %s were lifted back to seafloor' \
                     % (len(below),below_and_older.sum(),self.get_config('biology:competency_age_seconds'),below_and_younger.sum()) )
 
+
+    
+
     def interact_with_habitat(self):
             '''
-            The particle settles only if older than competency_age_seconds and within user-defined distance from bottom within habitat polygon
+            The coral particle settles only if older than competency_age_seconds and within user-defined habitat polygon
  
             '''
-            
+
             if self.num_elements_active() == 0:
                 return
+
+
             # if 'sea_floor_depth_below_sea_level' not in self.priority_list:
             #     return
             sea_floor_depth = self.sea_floor_depth()
@@ -243,24 +337,41 @@ class CoralLarvae(OceanDrift):
 
             # check if there are any particles old enough to settle and within habitat
             
-            if self.get_config('biology:distance_from_bottom_to_settle'):
-                old_and_in_habitat = np.logical_and(self.elements.age_seconds >= self.get_config('biology:competency_age_seconds'), 
-                                                    shapely.vectorized.contains(self.habitat_mask, self.elements.lon, self.elements.lat)) * self.elements.z <= -sea_floor_depth + self.get_config('biology:distance_from_bottom_to_settle')
-
-            else:
-                old_and_in_habitat = np.logical_and(self.elements.age_seconds >= self.get_config('biology:competency_age_seconds'), 
-                                                    shapely.vectorized.contains(self.habitat_mask, self.elements.lon, self.elements.lat))
+            old_and_in_habitat = np.logical_and(self.elements.age_seconds >= self.get_config('biology:competency_age_seconds'), 
+                                                shapely.vectorized.contains(self.habitat_mask, self.elements.lon, self.elements.lat))
 
             below = self.elements.z < -sea_floor_depth
 
             # Move all elements younger than competency_age_seconds, that tocuhed seabed back to just above seafloor 
             self.elements.z[np.where( (~old_and_in_habitat) & (below) )] = -sea_floor_depth[np.where((~old_and_in_habitat) & (below))] + 0.2
+
+            # larvae above habitat swim down if 
             
             if old_and_in_habitat.any():
+                if self.get_config('biology:swim_down_only_in_habitat'):
+                    self.elements.z[old_and_in_habitat] = np.minimum(0, self.elements.z[old_and_in_habitat] + self.get_config('biology:postcompetency_vetical_terminal_velocty')*self.time_step.total_seconds())
+                    logger.debug('%s larvae smelled habitat and swam down' % len(old_and_in_habitat))
+                if self.get_config('biology:settlement_opportunity_tracking'):
+                    #import pdb; pdb.set_trace()
+                    settled_lat = np.zeros(np.sum(old_and_in_habitat)+1)
+                    settled_lon = np.zeros(np.sum(old_and_in_habitat)+1)
+                    settled_lat[0] = 21.6
+                    settled_lon[0] = -157.8
+                    settled_lat[1:] = self.elements.lat[old_and_in_habitat]
+                    settled_lon[1:] = self.elements.lon[old_and_in_habitat]
+#                    settled_x, settled_y, _, _ = utm.from_latlon(settled_lat,settled_lon)
+                    self.elements.psuedo_settled = -1
+#                    self.elements.psuedo_settled[old_and_in_habitat] = [self.habitat_grid.get_bin_idx(settled_x[i],settled_y[i]) for i i$
+                    self.elements.psuedo_settled[old_and_in_habitat] = [self.habitat_grid.get_bin_idx(settled_lon[i],settled_lat[i]) for i in range(1,len(settled_lon))]
+                    logger.debug('%s elements reached habitat and were older than %s sec. and psuedo settled' \
+                             % (old_and_in_habitat.sum(),self.get_config('biology:competency_age_seconds')))
+                    return
+                if self.get_config('biology:distance_from_bottom_to_settle'):
+                    old_and_in_habitat = old_and_in_habitat * (self.elements.z <= -sea_floor_depth + self.get_config('biology:distance_from_bottom_to_settle'))
+                old_and_in_habitat = old_and_in_habitat * (np.random.rand(*old_and_in_habitat.shape) <= self.get_config('biology:settlement_success_rate'))
                 self.deactivate_elements(old_and_in_habitat, reason='settled_on_habitat')
                 logger.debug('%s elements reached habitat and were older than %s sec. and were deactivated' \
                              % (old_and_in_habitat.sum(),self.get_config('biology:competency_age_seconds')))
-
 
 
     def interact_with_coastline(self,final = False): 
@@ -356,16 +467,19 @@ class CoralLarvae(OceanDrift):
                                          reason='settled_on_coast')
 
     def larvae_buoyancy(self):
-        """Applies buoyancy or settlement swimming behavior based on competency age"""
 
         floating = np.where(self.elements.age_seconds<self.get_config('biology:competency_age_seconds'))[0]
         sinking = np.where(self.elements.age_seconds>=self.get_config('biology:competency_age_seconds'))[0]
 
         self.elements.z[floating] = np.minimum(0, self.elements.z[floating] + self.get_config('biology:precompetency_buoyancy')*self.time_step.total_seconds())
-        self.elements.z[sinking] = np.minimum(0, self.elements.z[sinking] + self.get_config('biology:postcompetency_vetical_terminal_velocty')*self.time_step.total_seconds())
-        self.elements.z[self.elements.z<-30] = -30
         logger.debug('%s larvae floating' % len(floating))
-        logger.debug('%s larvae sinking' % len(sinking))
+        
+        if not self.get_config('biology:swim_down_only_in_habitat'):
+            self.elements.z[sinking] = np.minimum(0, self.elements.z[sinking] + self.get_config('biology:postcompetency_vetical_terminal_velocty')*self.time_step.total_seconds())
+            logger.debug('%s larvae sinking' % len(sinking))
+        
+        self.elements.z[self.elements.z<-16] = -16
+
 
     def update(self):
         """Update positions and properties of buoyant particles."""
@@ -394,3 +508,4 @@ class CoralLarvae(OceanDrift):
 
         self.vertical_advection()
             
+
